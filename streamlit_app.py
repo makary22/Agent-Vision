@@ -95,6 +95,84 @@ except Exception as e:
 
 
 # --------------------------------------------------------------------------- #
+# 1b. Patch download_youtube_audio to support YouTube cookies from st.secrets
+#
+# Cloud deployments (Streamlit Community Cloud, etc.) run on datacenter IPs
+# that YouTube blocks. To bypass this, add a [youtube] section to your app
+# secrets (Settings → Secrets) with a `cookies` key containing the contents
+# of a Netscape-format cookies.txt file exported from a logged-in browser.
+#
+# Example secrets.toml entry:
+#   [youtube]
+#   cookies = """
+#   # Netscape HTTP Cookie File
+#   .youtube.com  TRUE  /  TRUE  ...
+#   """
+# --------------------------------------------------------------------------- #
+
+def _make_cookie_aware_downloader(original_fn):
+    """Wrap the notebook's download_youtube_audio with cookies support."""
+    import functools
+    import tempfile as _tempfile
+
+    @functools.wraps(original_fn)
+    def _wrapper(url: str) -> str:
+        import yt_dlp as _yt_dlp
+
+        # Try to read cookies from st.secrets
+        cookies_content = None
+        try:
+            cookies_content = st.secrets.get("youtube", {}).get("cookies", None)
+        except Exception:
+            pass
+
+        if not cookies_content:
+            # No cookies configured — call original function unchanged
+            return original_fn(url)
+
+        # Write cookies to a temp file and pass to yt-dlp
+        cookie_file = None
+        try:
+            cookie_file = _tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False, encoding="utf-8"
+            )
+            cookie_file.write(cookies_content)
+            cookie_file.flush()
+            cookie_file.close()
+
+            # Call original but intercept yt_dlp.YoutubeDL to inject cookiefile.
+            # We patch the ydl_opts by wrapping YoutubeDL itself temporarily.
+            _orig_YDL = _yt_dlp.YoutubeDL
+
+            class _YDLWithCookies(_orig_YDL):
+                def __init__(self, params=None, **kwargs):
+                    params = dict(params or {})
+                    params.setdefault("cookiefile", cookie_file.name)
+                    super().__init__(params, **kwargs)
+
+            _yt_dlp.YoutubeDL = _YDLWithCookies
+            try:
+                return original_fn(url)
+            finally:
+                _yt_dlp.YoutubeDL = _orig_YDL
+        finally:
+            if cookie_file:
+                try:
+                    os.unlink(cookie_file.name)
+                except OSError:
+                    pass
+
+    return _wrapper
+
+
+if "download_youtube_audio" in _pipeline:
+    _pipeline["download_youtube_audio"] = _make_cookie_aware_downloader(
+        _pipeline["download_youtube_audio"]
+    )
+
+
+
+# --------------------------------------------------------------------------- #
 # 2. Page setup + styling
 # --------------------------------------------------------------------------- #
 
