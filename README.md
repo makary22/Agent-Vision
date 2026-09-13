@@ -5,10 +5,7 @@
 
 Turn any YouTube video or local recording into a full transcript, a structured AI summary, a downloadable PDF report, and a chat-ready assistant you can ask follow-up questions — with first-class support for English, Arabic (full RTL rendering), and Hindi-English (Hinglish) code-switched speech.
 
-<!--
-  Add a real screenshot of the running app here once you have one, e.g.:
-  ![App screenshot](docs/screenshot.png)
--->
+![App screenshot](assets/screenshot.png)
 
 ## Features
 
