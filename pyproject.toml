@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "streamlit_app.py"
+entrypoint = "asgi_app:app"
