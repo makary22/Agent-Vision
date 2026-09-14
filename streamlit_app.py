@@ -113,12 +113,14 @@ except Exception as e:
 def _cloud_download_youtube_audio(url: str) -> str:
     """Cloud-safe replacement for download_youtube_audio from the notebook.
 
-    The notebook version uses the 'android' player client, which Google has
-    been returning HTTP 403 on for datacenter IPs. This version:
-      1. Uses 'ios' → 'web' → 'web_creator' clients (more permissive on cloud).
-      2. Injects YouTube cookies from st.secrets[youtube][cookies] when present,
-         bypassing the bot-detection IP block.
-      3. Falls back to the original notebook function if all else fails.
+    Tries multiple YouTube player clients in order. Injects cookies and/or a
+    proxy from st.secrets when present to bypass datacenter IP blocking.
+
+    Add to Streamlit secrets (Settings → Secrets):
+      [youtube]
+      cookies = \"\"\"<Netscape cookie file content>\"\"\"
+      # Optional — a proxy helps when cookies alone aren't enough:
+      proxy = "http://user:pass@proxy-host:port"
     """
     import glob as _glob
     import tempfile as _tempfile
@@ -127,11 +129,18 @@ def _cloud_download_youtube_audio(url: str) -> str:
     DOWNLOAD_DIR = _pipeline.get("DOWNLOAD_DIR", "downloads")
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-    # --- Read cookies from st.secrets (optional) ---
+    # --- Read cookies from st.secrets (use [] not .get() — more reliable) ---
     cookies_content = None
     try:
-        cookies_content = st.secrets.get("youtube", {}).get("cookies", None)
-    except Exception:
+        cookies_content = st.secrets["youtube"]["cookies"]
+    except (KeyError, AttributeError, Exception):
+        pass
+
+    # --- Read optional proxy from st.secrets ---
+    proxy = None
+    try:
+        proxy = st.secrets["youtube"]["proxy"]
+    except (KeyError, AttributeError, Exception):
         pass
 
     cookie_file_path = None
@@ -149,8 +158,8 @@ def _cloud_download_youtube_audio(url: str) -> str:
 
     output_path = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
 
-    # Try player clients in order — ios works best on cloud servers
-    clients_to_try = ["ios", "web", "web_creator", "android"]
+    # tv_embedded / mweb are often less restricted on cloud IPs
+    clients_to_try = ["tv_embedded", "ios", "mweb", "web", "web_creator", "android"]
     last_error = None
 
     for client in clients_to_try:
@@ -173,6 +182,8 @@ def _cloud_download_youtube_audio(url: str) -> str:
         }
         if cookie_file_path:
             ydl_opts["cookiefile"] = cookie_file_path
+        if proxy:
+            ydl_opts["proxy"] = proxy
 
         try:
             with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -206,20 +217,24 @@ def _cloud_download_youtube_audio(url: str) -> str:
             last_error = e
             continue  # try next client
 
-    # All clients failed — clean up and raise
+    # Clean up cookie file before raising
     if cookie_file_path:
         try:
             os.unlink(cookie_file_path)
         except OSError:
             pass
+
     raise RuntimeError(
-        f"Could not download audio for '{url}' "
-        f"(tried clients: {clients_to_try}): {last_error}"
+        f"YouTube blocked the download from this server's IP address "
+        f"(tried clients: {clients_to_try}). "
+        f"Workaround: download the video locally and use the 'Upload a file' option instead. "
+        f"Technical detail: {last_error}"
     )
 
 
 if "download_youtube_audio" in _pipeline:
     _pipeline["download_youtube_audio"] = _cloud_download_youtube_audio
+
 
 
 
