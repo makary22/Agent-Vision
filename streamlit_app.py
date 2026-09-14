@@ -110,65 +110,117 @@ except Exception as e:
 #   """
 # --------------------------------------------------------------------------- #
 
-def _make_cookie_aware_downloader(original_fn):
-    """Wrap the notebook's download_youtube_audio with cookies support."""
-    import functools
+def _cloud_download_youtube_audio(url: str) -> str:
+    """Cloud-safe replacement for download_youtube_audio from the notebook.
+
+    The notebook version uses the 'android' player client, which Google has
+    been returning HTTP 403 on for datacenter IPs. This version:
+      1. Uses 'ios' → 'web' → 'web_creator' clients (more permissive on cloud).
+      2. Injects YouTube cookies from st.secrets[youtube][cookies] when present,
+         bypassing the bot-detection IP block.
+      3. Falls back to the original notebook function if all else fails.
+    """
+    import glob as _glob
     import tempfile as _tempfile
+    import yt_dlp as _yt_dlp
 
-    @functools.wraps(original_fn)
-    def _wrapper(url: str) -> str:
-        import yt_dlp as _yt_dlp
+    DOWNLOAD_DIR = _pipeline.get("DOWNLOAD_DIR", "downloads")
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-        # Try to read cookies from st.secrets
-        cookies_content = None
+    # --- Read cookies from st.secrets (optional) ---
+    cookies_content = None
+    try:
+        cookies_content = st.secrets.get("youtube", {}).get("cookies", None)
+    except Exception:
+        pass
+
+    cookie_file_path = None
+    if cookies_content:
         try:
-            cookies_content = st.secrets.get("youtube", {}).get("cookies", None)
-        except Exception:
-            pass
-
-        if not cookies_content:
-            # No cookies configured — call original function unchanged
-            return original_fn(url)
-
-        # Write cookies to a temp file and pass to yt-dlp
-        cookie_file = None
-        try:
-            cookie_file = _tempfile.NamedTemporaryFile(
+            tf = _tempfile.NamedTemporaryFile(
                 mode="w", suffix=".txt", delete=False, encoding="utf-8"
             )
-            cookie_file.write(cookies_content)
-            cookie_file.flush()
-            cookie_file.close()
+            tf.write(cookies_content)
+            tf.flush()
+            tf.close()
+            cookie_file_path = tf.name
+        except Exception:
+            cookie_file_path = None
 
-            # Call original but intercept yt_dlp.YoutubeDL to inject cookiefile.
-            # We patch the ydl_opts by wrapping YoutubeDL itself temporarily.
-            _orig_YDL = _yt_dlp.YoutubeDL
+    output_path = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
 
-            class _YDLWithCookies(_orig_YDL):
-                def __init__(self, params=None, **kwargs):
-                    params = dict(params or {})
-                    params.setdefault("cookiefile", cookie_file.name)
-                    super().__init__(params, **kwargs)
+    # Try player clients in order — ios works best on cloud servers
+    clients_to_try = ["ios", "web", "web_creator", "android"]
+    last_error = None
 
-            _yt_dlp.YoutubeDL = _YDLWithCookies
-            try:
-                return original_fn(url)
-            finally:
-                _yt_dlp.YoutubeDL = _orig_YDL
-        finally:
-            if cookie_file:
-                try:
-                    os.unlink(cookie_file.name)
-                except OSError:
-                    pass
+    for client in clients_to_try:
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": output_path,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "192",
+                }
+            ],
+            "quiet": True,
+            "extractor_args": {"youtube": {"player_client": [client]}},
+            "retries": 5,
+            "fragment_retries": 5,
+            "continuedl": False,
+            "nopart": True,
+        }
+        if cookie_file_path:
+            ydl_opts["cookiefile"] = cookie_file_path
 
-    return _wrapper
+        try:
+            with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                guessed_filename = ydl.prepare_filename(info)
+
+            # Locate the converted WAV file
+            filename = None
+            for d in info.get("requested_downloads", []) or []:
+                candidate = d.get("filepath") or d.get("_filename")
+                if candidate and os.path.exists(candidate):
+                    filename = candidate
+                    break
+            if filename is None:
+                base, _ = os.path.splitext(guessed_filename)
+                candidate = base + ".wav"
+                if os.path.exists(candidate):
+                    filename = candidate
+            if filename is None:
+                candidates = sorted(
+                    _glob.glob(os.path.join(DOWNLOAD_DIR, "*.wav")),
+                    key=os.path.getmtime,
+                    reverse=True,
+                )
+                if candidates:
+                    filename = candidates[0]
+
+            if filename and os.path.exists(filename):
+                return filename
+        except Exception as e:
+            last_error = e
+            continue  # try next client
+
+    # All clients failed — clean up and raise
+    if cookie_file_path:
+        try:
+            os.unlink(cookie_file_path)
+        except OSError:
+            pass
+    raise RuntimeError(
+        f"Could not download audio for '{url}' "
+        f"(tried clients: {clients_to_try}): {last_error}"
+    )
 
 
 if "download_youtube_audio" in _pipeline:
-    _pipeline["download_youtube_audio"] = _make_cookie_aware_downloader(
-        _pipeline["download_youtube_audio"]
-    )
+    _pipeline["download_youtube_audio"] = _cloud_download_youtube_audio
+
 
 
 
