@@ -309,6 +309,7 @@ with st.sidebar:
     source = None
     if input_mode == "YouTube / URL":
         source = st.text_input("YouTube URL or link", placeholder="https://www.youtube.com/watch?v=...")
+        st.caption("⚠️ YouTube may block downloads from cloud servers. If it fails, download the audio locally and use 'Upload a file' instead.")
     else:
         uploaded = st.file_uploader("Audio or video file", type=["mp3", "wav", "m4a", "mp4", "mov", "mkv"])
         if uploaded is not None:
@@ -380,6 +381,20 @@ if process_clicked:
                 st.session_state.state = run_new_meeting(
                     source, audio_type, transcript_language, summary_language
                 )
+        except Exception as _pipeline_err:
+            _err_str = str(_pipeline_err)
+            if "403" in _err_str or "YouTube blocked" in _err_str or "unable to download" in _err_str:
+                st.error(
+                    "**YouTube blocked the download** — cloud servers are often restricted by YouTube.\n\n"
+                    "**Workaround (2 steps):**\n"
+                    "1. Download the audio on your own PC:\n"
+                    "   ```\n"
+                    "   yt-dlp -x --audio-format mp3 \"PASTE_URL_HERE\"\n"
+                    "   ```\n"
+                    "2. Switch to **'Upload a file'** in the sidebar and upload the downloaded file."
+                )
+            else:
+                st.exception(_pipeline_err)
         finally:
             st.session_state.is_processing = False
 
